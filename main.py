@@ -11,6 +11,49 @@ app.add_middleware(
     SessionMiddleware,
     secret_key="CHANGE_MOI_EN_TRUC_LONG_RANDOM_987654321"
 )
+import unicodedata
+
+def detectar_prioridade(texto):
+
+    if not texto:
+        return None
+
+    # normaliser texte
+    t = texto.lower()
+
+    t = unicodedata.normalize("NFD", t)
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+    # =========================
+    # PRIORITÉ PREMIÈRE
+    # =========================
+
+    palavras_primeira = [
+        "primeiro",
+        "1o",
+        "1º",
+        "first"
+    ]
+
+    for p in palavras_primeira:
+        if p in t:
+            return "primeira"
+
+    # =========================
+    # PRIORITÉ DERNIÈRE
+    # =========================
+
+    palavras_ultima = [
+        "ultimo",
+        "ultima",
+        "last"
+    ]
+
+    for p in palavras_ultima:
+        if p in t:
+            return "ultima"
+
+    return None
 
 def normalizar_nome(nome_raw):
 
@@ -103,6 +146,9 @@ def normalizar_nome(nome_raw):
         "walter": "WALTER FERNANDES",
         "yama": "YAMA",
         "cezar": "Cezar Federmann",
+        "kim": "KIM",
+        "oliver": "OLIVER MOESGEN",
+        "arthur": "ARTHUR MEIER"
     }
 
     # ================================
@@ -649,46 +695,36 @@ def toggle_convidado(name: str = Form(...)):
 
 def regrouper_souhaits(joueurs):
     """
-    Regroupe les joueurs selon leurs souhaits.
-    Gère les chaînes A -> B -> C.
+    Version 100% sûre.
+    Aucun joueur ne peut disparaître.
     """
 
-    graph = {}
+    # Initialisation : chaque joueur dans son bloc
+    blocs = [[j] for j in joueurs]
 
-    # Lier automatiquement invités à leur joueur
+    # Helper pour trouver bloc d'un joueur
+    def trouver_bloc(nom):
+        for bloc in blocs:
+            for j in bloc:
+                if j["name"] == nom:
+                    return bloc
+        return None
+
+    # Fusion selon souhaits
     for j in joueurs:
-      if j["name"].startswith("conv."):
-           nom_principal = j["name"].replace("conv. ", "")
-           graph.setdefault(j["name"], set()).add(nom_principal)
-           graph.setdefault(nom_principal, set()).add(j["name"])
 
-    for j in get_jogadores():
-        nom = j["name"]
         souhait = j.get("souhait", "").strip()
+        if not souhait:
+            continue
 
-        if souhait:
-            graph.setdefault(nom, set()).add(souhait)
-            graph.setdefault(souhait, set()).add(nom)
+        bloc1 = trouver_bloc(j["name"])
+        bloc2 = trouver_bloc(souhait)
 
-    visited = set()
-    blocs = []
+        if bloc1 and bloc2 and bloc1 is not bloc2:
 
-    def dfs(player_name, bloc):
-        visited.add(player_name)
-
-        joueur = next((x for x in joueurs if x["name"] == player_name), None)
-        if joueur:
-            bloc.append(joueur)
-
-        for voisin in graph.get(player_name, []):
-            if voisin not in visited:
-                dfs(voisin, bloc)
-
-    for j in joueurs:
-        if j["name"] not in visited:
-            bloc = []
-            dfs(j["name"], bloc)
-            blocs.append(bloc)
+            # Fusion propre
+            bloc1.extend(bloc2)
+            blocs.remove(bloc2)
 
     return blocs
 
@@ -748,16 +784,18 @@ def gerar():
 
     for tee in ["1", "2"]:
 
+        print("\n======================")
+        print("TEE:", tee)
+
         # ===============================
         # 1️⃣ Récupérer joueurs du tee
         # ===============================
         lista = [r for r in inscricoes if r["tee"] == tee]
+        print("INSCRITS:", len(lista))
 
         jogadores_com_hcp = []
 
         for r in lista:
-
-            # 🎟️ Gestion invité
             if r["name"].startswith("conv. "):
                 jogadores_com_hcp.append({
                     "name": r["name"],
@@ -771,9 +809,9 @@ def gerar():
                         jogadores_com_hcp.append(j)
                         break
 
-        total_joueurs = len(jogadores_com_hcp)
+        print("JOGADORES_COM_HCP:", len(jogadores_com_hcp))
 
-        if total_joueurs == 0:
+        if not jogadores_com_hcp:
             saidas_geradas[tee] = []
             horarios[tee] = []
             continue
@@ -783,19 +821,19 @@ def gerar():
         # ===============================
         blocs = regrouper_souhaits(jogadores_com_hcp)
 
-        if total_joueurs != 5:
-            for bloc in blocs:
-                if len(bloc) > 4:
-                    message_erreur = "Un bloc dépasse 4 joueurs. Impossible."
-                    return RedirectResponse("/", status_code=303)
+        print("NB BLOCS:", len(blocs))
+        print("SOMME BLOCS:", sum(len(b) for b in blocs))
+
+        # 🔥 Vérification sécurité
+        if sum(len(b) for b in blocs) != len(jogadores_com_hcp):
+            message_erreur = "ERREUR: Tous les joueurs ne sont pas dans les blocs."
+            print("⚠️ PROBLÈME BLOCS")
+            return RedirectResponse("/", status_code=303)
 
         # ===============================
-        # 3️⃣ Trier par handicap décroissant
+        # 3️⃣ Trier joueurs par HCP décroissant
         # ===============================
-        jogadores_com_hcp.sort(
-            key=lambda j: j["handicap"],
-            reverse=True
-        )
+        jogadores_com_hcp.sort(key=lambda j: j["handicap"], reverse=True)
 
         # ===============================
         # 4️⃣ Déterminer tailles optimales
@@ -819,47 +857,42 @@ def gerar():
 
             if not placed:
                 message_erreur = "Impossible de placer les souhaits."
+                print("⚠️ IMPOSSIBLE DE PLACER BLOC")
                 return RedirectResponse("/", status_code=303)
 
-        # ===============================
-        # 6️⃣ Vérification HCP max
-        # ===============================
-        for grupo in grupos:
+        print("JOUEURS PLACÉS:", sum(len(g) for g in grupos))
 
-            total = sum(j["handicap"] for j in grupo)
-
-            if len(grupo) == 3 and hcp_max_3:
-                if total > hcp_max_3:
-                    message_erreur = "HCP max groupe 3 dépassé."
-                    return RedirectResponse("/", status_code=303)
-
-            if len(grupo) == 4 and hcp_max_4:
-                if total > hcp_max_4:
-                    message_erreur = "HCP max groupe 4 dépassé."
-                    return RedirectResponse("/", status_code=303)
+        # 🔥 Vérification finale
+        if sum(len(g) for g in grupos) != len(jogadores_com_hcp):
+            message_erreur = "ERREUR: Tous les joueurs ne sont pas placés."
+            print("⚠️ JOUEURS PERDUS")
+            return RedirectResponse("/", status_code=303)
 
         # ===============================
-        # 7️⃣ TRI FINAL CORRIGÉ
+        # 6️⃣ Séparer 3 et 4
         # ===============================
+        grupos_3 = [g for g in grupos if len(g) == 3]
+        grupos_4 = [g for g in grupos if len(g) == 4]
 
-        def score_grupo(grupo):
+        grupos_3.sort(key=lambda g: sum(j["handicap"] for j in g))
+        grupos_4.sort(key=lambda g: sum(j["handicap"] for j in g))
 
-            # 🔥 RÈGLE ABSOLUE : groupe de 3 sort avant groupe de 4
-            taille_score = 0 if len(grupo) == 3 else 1
+        grupos_ordenados = grupos_3 + grupos_4
 
-            # 🎯 Priorité interne
-            prioridade_score = 1
-            if any(j.get("prioridade") == "primeira" for j in grupo):
-                prioridade_score = 0
-            elif any(j.get("prioridade") == "ultima" for j in grupo):
-                prioridade_score = 2
+        # ===============================
+        # 7️⃣ Gestion priorité
+        # ===============================
+        def contient_primeira(grupo):
+            return any(j.get("prioridade") == "primeira" for j in grupo)
 
-            # ⚖️ Équilibre HCP
-            hcp_total = sum(j["handicap"] for j in grupo)
+        def contient_ultima(grupo):
+            return any(j.get("prioridade") == "ultima" for j in grupo)
 
-            return (taille_score, prioridade_score, hcp_total)
+        grupos_primeira = [g for g in grupos_ordenados if contient_primeira(g)]
+        grupos_normaux = [g for g in grupos_ordenados if not contient_primeira(g) and not contient_ultima(g)]
+        grupos_ultima = [g for g in grupos_ordenados if contient_ultima(g)]
 
-        grupos.sort(key=score_grupo)
+        grupos = grupos_primeira + grupos_normaux + grupos_ultima
 
         # ===============================
         # 8️⃣ Sauvegarde résultat
@@ -1020,6 +1053,9 @@ def import_whatsapp(texto: str = Form(...)):
 
     global inscricoes
 
+    # 🔄 Reset propre
+    inscricoes = []
+
     linhas = texto.splitlines()
     tee_atual = None
 
@@ -1027,43 +1063,48 @@ def import_whatsapp(texto: str = Form(...)):
 
     for linha in linhas:
 
-        linha_original = linha
-        linha = linha.strip()
+        linha_original = linha.strip()
 
-        if not linha:
+        if not linha_original:
             continue
 
+        linha_lower = linha_original.lower().strip()
+
         # ==========================
-        # Détection horaire
+        # 1️⃣ Détection horaire
         # ==========================
 
-        if "7:00" in linha:
+        if linha_lower.startswith("7:00"):
             tee_atual = "1"
             continue
 
-        if "8:00" in linha:
+        if linha_lower.startswith("8:00"):
             tee_atual = "2"
             continue
 
+        # Si aucun tee défini → ignorer
         if not tee_atual:
             continue
 
-        linha_lower = linha.lower()
+        # Ignorer lignes décoratives
+        if any(x in linha_lower for x in [
+            "sabado", "sábado", "domingo", "ranking",
+            "sexta", "jogos", "final"
+        ]):
+            continue
 
         # ==========================
-        # 🎟️ CAS CONVIDADO
+        # 2️⃣ CAS CONVIDADO
         # ==========================
 
         if "amigo do" in linha_lower:
 
-            # Extraire nom du joueur principal après "amigo do"
             parte = linha_lower.split("amigo do")[-1].strip()
-
             nome_responsavel = normalizar_nome(parte)
 
             if nome_responsavel:
 
-                # 🔥 Activer convidado en base
+                # Activer convidado en base
                 conn = get_connection()
                 conn.execute(
                     "UPDATE jogadores SET convidado = 1 WHERE name = ?",
@@ -1072,7 +1113,7 @@ def import_whatsapp(texto: str = Form(...)):
                 conn.commit()
                 conn.close()
 
-                # 🔥 Ajouter invité dans inscricoes
+                # Ajouter conv. NOM
                 inscricoes.append({
                     "name": f"conv. {nome_responsavel}",
                     "tee": tee_atual
@@ -1081,36 +1122,65 @@ def import_whatsapp(texto: str = Form(...)):
             continue
 
         # ==========================
-        # 👤 CAS JOUEUR NORMAL
+        # 3️⃣ Nettoyage ligne joueur
+        # ==========================
+
+        # Supprimer contenu parenthèses
+        if "(" in linha_original:
+            linha_original = linha_original.split("(")[0]
+
+        # Supprimer tirets
+        if "-" in linha_original:
+            linha_original = linha_original.split("-")[0]
+
+        linha_original = linha_original.strip()
+
+        # ==========================
+        # 4️⃣ Normalisation nom
         # ==========================
 
         nome_oficial = normalizar_nome(linha_original)
 
-        if nome_oficial:
+        if not nome_oficial:
+            print("NON MATCHÉ:", linha_original)
+            continue
 
-            # Supprimer ancienne inscription
-            inscricoes = [
-                i for i in inscricoes
-                if i["name"] != nome_oficial
-            ]
+        # Ajouter inscription joueur
+        inscricoes.append({
+            "name": nome_oficial,
+            "tee": tee_atual
+        })
 
-            inscricoes.append({
-                "name": nome_oficial,
-                "tee": tee_atual
-            })
+        # ==========================
+        # 5️⃣ Détection priorité
+        # ==========================
 
-            # ==========================
-            # 🎯 PRIORITÉ
-            # ==========================
+        prioridade_detectada = detectar_prioridade(linha)
 
-            if "primeiro" in linha_lower:
+        conn = get_connection()
 
-                conn = get_connection()
-                conn.execute(
-                    "UPDATE jogadores SET prioridade = 'primeira' WHERE name = ?",
-                    (nome_oficial,)
-                )
-                conn.commit()
-                conn.close()
+        if prioridade_detectada:
+            conn.execute(
+                "UPDATE jogadores SET prioridade = ? WHERE name = ?",
+                (prioridade_detectada, nome_oficial)
+            )
+        else:
+            conn.execute(
+                "UPDATE jogadores SET prioridade = '' WHERE name = ?",
+                (nome_oficial,)
+            )
+
+        conn.commit()
+        conn.close()
+
+    # ==========================
+    # 🔍 DEBUG FINAL
+    # ==========================
+
+    print("------ DEBUG IMPORT ------")
+    print("TOTAL INSCRICOES:", len(inscricoes))
+    print("7H:", len([i for i in inscricoes if i["tee"] == "1"]))
+    print("8H:", len([i for i in inscricoes if i["tee"] == "2"]))
+    print("--------------------------")
 
     return RedirectResponse("/", status_code=303)

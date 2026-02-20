@@ -1,0 +1,913 @@
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from starlette.middleware.sessions import SessionMiddleware
+from datetime import datetime, timedelta
+import os
+import json
+
+app = FastAPI()   # 🔥 CETTE LIGNE DOIT ÊTRE AU NIVEAU GLOBAL
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="CHANGE_MOI_EN_TRUC_LONG_RANDOM_987654321"
+)
+
+# ================= CHARGEMENT JOUEURS =================
+
+
+
+
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin(request: Request):
+
+    # TEMPORAIREMENT sans sécurité
+    # if not request.session.get("admin"):
+    #     return RedirectResponse("/login", status_code=303)
+
+    jogadores = get_jogadores()
+
+    html = "<h1>Administração</h1>"
+    html += '<a href="/">Voltar</a><br><br>'
+
+    html += """
+    <form method="post" action="/add_jogador">
+        Nome: <input type="text" name="name" required>
+        Handicap: <input type="number" step="0.1" name="handicap" required>
+        <button>Adicionar</button>
+    </form>
+    <hr>
+    """
+
+    for j in jogadores:
+     html += f"""
+        <div style="margin-bottom:5px;">
+        {j['name']} (hcp {j['handicap']})
+        <form action="/delete_jogador" method="post" style="display:inline;">
+            <input type="hidden" name="name" value="{j['name']}">
+            <button style="background:#B22222;color:white;border:none;padding:3px 6px;border-radius:4px;">
+                Supprimer
+            </button>
+        </form>
+       </div>
+       """
+
+    return html
+
+    jogadores = get_jogadores()
+
+    html = "<h1>Administração</h1>"
+    html += '<a href="/">Voltar</a><br><br>'
+
+    html += """
+    <form method="post" action="/add_jogador">
+        Nome: <input type="text" name="name" required>
+        Handicap: <input type="number" step="0.1" name="handicap" required>
+        <button>Adicionar</button>
+    </form>
+    <hr>
+    """
+
+    for j in jogadores:
+        html += f"{j['name']} (hcp {j['handicap']})<br>"
+
+    return html
+
+
+
+# ================= DONNÉES =================
+
+from database import get_connection
+
+def get_jogadores():
+    conn = get_connection()
+    jogadores = conn.execute("SELECT * FROM jogadores").fetchall()
+    conn.close()
+    return [dict(j) for j in jogadores]
+
+if os.path.exists("inscricoes.json"):
+    with open("inscricoes.json", "r") as f:
+        inscricoes = json.load(f)
+else:
+    inscricoes = []
+saidas_geradas = {"1": [], "2": []}
+horarios = {"1": [], "2": []}
+
+data_jogo = ""
+ranking = False
+hcp_max_3 = None
+hcp_max_4 = None
+message_erreur = ""
+
+
+# ================= HOME =================
+
+
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+
+    jogadores = get_jogadores()
+
+    html = '<a href="/admin">Administração</a><br><br>'
+
+    # ================= HEADER =================
+
+    html += '''
+    <div style="
+        display:flex;
+        justify-content:space-between;
+        align-items:flex-start;
+        margin-bottom:20px;
+    ">
+    '''
+
+    html += '<h1 style="margin:0;">Inscrição para o jogo</h1>'
+
+    html += '''
+        <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex; gap:8px;">
+                <a href="/gerar">
+                    <button style="background:#2E8B57;color:white;padding:8px 15px;border:none;border-radius:6px;">
+                        GERAR SAÍDAS
+                    </button>
+                </a>
+
+                <form action="/reset_saidas" method="post">
+                    <button style="background:#555;color:white;padding:8px 15px;border:none;border-radius:6px;">
+                        NOVA TENTATIVA
+                    </button>
+                </form>
+            </div>
+
+            <div style="display:flex; gap:8px;">
+                <a href="/pdf">
+                    <button style="background:#1E90FF;color:white;padding:8px 15px;border:none;border-radius:6px;">
+                        GERAR PDF
+                    </button>
+                </a>
+
+                <form action="/cancelar_todas" method="post">
+                    <button style="background:#B22222;color:white;padding:8px 15px;border:none;border-radius:6px;">
+                        CANCELAR TODAS
+                    </button>
+                </form>
+            </div>
+
+            <a href="/export_whatsapp">
+                <button style="background:#25D366;color:white;padding:8px 15px;border:none;border-radius:6px;">
+                    EXPORT WHATSAPP
+                </button>
+            </a>
+        </div>
+    </div>
+    '''
+
+    # ================= MESSAGE ERREUR =================
+
+    if message_erreur:
+        html += f'''
+        <div style="background:#B22222;color:white;padding:10px;border-radius:6px;margin-bottom:15px;">
+            {message_erreur}
+        </div>
+        '''
+
+    # ================= CONFIG =================
+
+    html += f'''
+    <form action="/configurar_jogo" method="post"
+          style="background:#f5f5f5;padding:10px;border-radius:8px;margin-bottom:20px">
+        Data: <input type="date" name="data" value="{data_jogo}">
+        Ranking: <input type="checkbox" name="ranking_check" {"checked" if ranking else ""}>
+        HCP grupo 3: <input type="number" step="0.1" name="hcp3" value="{hcp_max_3 if hcp_max_3 else ''}">
+        HCP grupo 4: <input type="number" step="0.1" name="hcp4" value="{hcp_max_4 if hcp_max_4 else ''}">
+        <button>Salvar</button>
+    </form>
+    '''
+
+    # ================= CONTAINER PRINCIPAL =================
+
+    html += '<div style="display:flex;flex-direction:column;gap:40px;">'
+
+    # ================= JOUEURS =================
+
+    html += '<div>'
+    html += '<h2>Jogadores</h2>'
+
+    for p in jogadores:
+
+        inscrito = next((r["tee"] for r in inscricoes if r["name"] == p["name"]), None)
+
+        style7 = "background:#FFD700;" if inscrito == "1" else ""
+        style8 = "background:#FF8C00;color:white;" if inscrito == "2" else ""
+        style0 = "background:#B22222;color:white;" if inscrito is None else ""
+
+        html += '''
+        <div style="
+            display:grid;
+            grid-template-columns: 320px 70px 70px 80px 160px 160px 110px;
+            align-items:center;
+            gap:6px;
+            margin-bottom:6px;
+        ">
+        '''
+
+        html += f'<div style="white-space:nowrap;font-weight:bold;">{p["name"]} (hcp {p["handicap"]})</div>'
+
+        # 7h
+        html += f'''
+        <form action="/registrar" method="post">
+            <input type="hidden" name="name" value="{p["name"]}">
+            <input type="hidden" name="tee" value="1">
+            <button style="width:100%;{style7}padding:4px;border:none;border-radius:4px;">7h</button>
+        </form>
+        '''
+
+        # 8h
+        html += f'''
+        <form action="/registrar" method="post">
+            <input type="hidden" name="name" value="{p["name"]}">
+            <input type="hidden" name="tee" value="2">
+            <button style="width:100%;{style8}padding:4px;border:none;border-radius:4px;">8h</button>
+        </form>
+        '''
+
+        # Não
+        html += f'''
+        <form action="/nao_jogar" method="post">
+            <input type="hidden" name="name" value="{p["name"]}">
+            <button style="width:100%;{style0}padding:4px;border:none;border-radius:4px;">Não</button>
+        </form>
+        '''
+
+        # Souhait
+        html += f'''
+        <form action="/souhait" method="post">
+            <input type="hidden" name="name" value="{p["name"]}">
+            <select name="souhait" onchange="this.form.submit()" style="width:100%;">
+                <option value="">-- Souhait --</option>
+        '''
+        for autre in jogadores:
+            if autre["name"] != p["name"]:
+                selected = "selected" if p.get("souhait") == autre["name"] else ""
+                html += f'<option value="{autre["name"]}" {selected}>{autre["name"]}</option>'
+        html += '</select></form>'
+
+        # Prioridade
+        html += f'''
+        <form action="/prioridade" method="post">
+            <input type="hidden" name="name" value="{p["name"]}">
+            <select name="prioridade" onchange="this.form.submit()" style="width:100%;">
+                <option value="">-- Prioridade --</option>
+                <option value="primeira" {"selected" if p.get("prioridade")=="primeira" else ""}>1ª Turma</option>
+                <option value="ultima" {"selected" if p.get("prioridade")=="ultima" else ""}>Última Turma</option>
+            </select>
+        </form>
+        '''
+
+        # Convidado
+        cor = "background:#2E8B57;color:white;" if p.get("convidado") else ""
+        html += f'''
+        <form action="/toggle_convidado" method="post">
+            <input type="hidden" name="name" value="{p["name"]}">
+            <button style="width:100%;{cor}padding:4px;border:1px solid #999;border-radius:4px;">
+                CONVIDADO
+            </button>
+        </form>
+        '''
+
+        html += '</div>'
+
+    html += '</div>'
+
+    # ================= INSCRITOS =================
+
+    html += '<div>'
+    html += '<h2>INSCRITOS</h2>'
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">'
+
+    for tee in ["1", "2"]:
+
+        html += '<div>'
+        html += f'<h3>{"7h" if tee=="1" else "8h"}</h3>'
+        html += '<div style="border:1px solid #ccc;padding:8px;min-height:150px;">'
+
+        for r in inscricoes:
+            if r["tee"] == tee:
+                html += f'<div>{r["name"]}</div>'
+
+        html += '</div></div>'
+
+    html += '</div></div>'
+
+    # ================= SAIDAS =================
+
+    html += '<div>'
+    html += '<h2>Saídas</h2>'
+
+    for tee in ["1", "2"]:
+
+        html += f'<h3>{"7h" if tee=="1" else "8h"}</h3>'
+
+        if not saidas_geradas.get(tee):
+            html += "Aucun groupe généré.<br><br>"
+            continue
+
+        for i, grupo in enumerate(saidas_geradas[tee]):
+
+            hora = horarios[tee][i] if i < len(horarios[tee]) else ""
+            html += f"<b>{hora}</b><br>"
+
+            total = 0
+
+            for r in grupo:
+
+                if r["name"].startswith("conv. "):
+                    html += f'{r["name"]} (hcp 0)<br>'
+                else:
+                    for j in jogadores:
+                        if j["name"] == r["name"]:
+                            total += j["handicap"]
+                            html += f'{j["name"]} ({j["handicap"]})<br>'
+                            break
+
+            html += f"<b>Total: {round(total,1)}</b><br><br>"
+
+    html += '</div>'
+    html += '</div>'  # ferme container principal
+
+    return html
+
+    # ================= ACTIONS =================
+
+@app.post("/add_jogador")
+def add_jogador(name: str = Form(...), handicap: float = Form(...)):
+
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO jogadores (name, handicap, souhait) VALUES (?, ?, ?)",
+        (name, handicap, "")
+    )
+    conn.commit()
+    conn.close()
+
+    return RedirectResponse("/admin", status_code=303)
+
+@app.post("/registrar")
+def registrar(name: str = Form(...), tee: str = Form(...)):
+    global inscricoes
+
+    # supprimer ancienne inscription du joueur + invité
+    inscricoes = [
+        i for i in inscricoes
+        if i["name"] != name and i["name"] != f"conv. {name}"
+    ]
+
+    # ajouter joueur principal
+    inscricoes.append({
+        "name": name,
+        "tee": tee
+    })
+
+    # vérifier si invité actif
+    conn = get_connection()
+    jogador = conn.execute(
+        "SELECT convidado FROM jogadores WHERE name = ?",
+        (name,)
+    ).fetchone()
+    conn.close()
+
+    if jogador and jogador["convidado"] == 1:
+        inscricoes.append({
+            "name": f"conv. {name}",
+            "tee": tee
+        })
+
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/nao_jogar")
+def nao_jogar(name: str = Form(...)):
+    global inscricoes
+    inscricoes = [i for i in inscricoes if i["name"] != name]
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/cancelar_todas")
+def cancelar_todas():
+
+    global inscricoes
+    global saidas_geradas
+    global horarios
+    global message_erreur
+
+    # 🔹 Reset variables en mémoire
+    inscricoes = []
+    saidas_geradas = {"1": [], "2": []}
+    horarios = {"1": [], "2": []}
+    message_erreur = ""
+
+    # 🔹 Reset base de données
+    conn = get_connection()
+    conn.execute("""
+        UPDATE jogadores
+        SET convidado = 0,
+            souhait = '',
+            prioridade = ''
+    """)
+    conn.commit()
+    conn.close()
+
+    # 🔹 Remettre tous les convidados à False en base
+    conn = get_connection()
+    conn.execute("UPDATE jogadores SET convidado = 0")
+    conn.commit()
+    conn.close()
+
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/reset_saidas")
+def reset_saidas():
+    global saidas_geradas, horarios
+    saidas_geradas = {"1": [], "2": []}
+    horarios = {"1": [], "2": []}
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/configurar_jogo")
+def configurar_jogo(
+    data: str = Form(""),
+    ranking_check: str = Form(None),
+    hcp3: float = Form(None),
+    hcp4: float = Form(None),
+):
+    global data_jogo, ranking, hcp_max_3, hcp_max_4
+
+    data_jogo = data
+    ranking = ranking_check is not None
+    hcp_max_3 = hcp3
+    hcp_max_4 = hcp4
+
+    return RedirectResponse("/", status_code=303)
+
+@app.post("/souhait")
+def definir_souhait(name: str = Form(...), souhait: str = Form("")):
+
+    conn = get_connection()
+    conn.execute(
+        "UPDATE jogadores SET souhait = ? WHERE name = ?",
+        (souhait.strip(), name)
+    )
+    conn.commit()
+    conn.close()
+
+    return RedirectResponse("/", status_code=303)
+
+@app.post("/delete_jogador")
+def delete_jogador(name: str = Form(...)):
+    conn = get_connection()
+    conn.execute("DELETE FROM jogadores WHERE name = ?", (name,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/admin", status_code=303)
+
+@app.post("/prioridade")
+def definir_prioridade(name: str = Form(...), prioridade: str = Form("")):
+
+    conn = get_connection()
+    conn.execute(
+        "UPDATE jogadores SET prioridade = ? WHERE name = ?",
+        (prioridade, name)
+    )
+    conn.commit()
+    conn.close()
+
+    return RedirectResponse("/", status_code=303)
+
+@app.post("/toggle_convidado")
+def toggle_convidado(name: str = Form(...)):
+    global inscricoes
+
+    conn = get_connection()
+
+    jogador = conn.execute(
+        "SELECT convidado FROM jogadores WHERE name = ?",
+        (name,)
+    ).fetchone()
+
+    novo_valor = 0 if jogador["convidado"] else 1
+
+    conn.execute(
+        "UPDATE jogadores SET convidado = ? WHERE name = ?",
+        (novo_valor, name)
+    )
+
+    conn.commit()
+    conn.close()
+
+    # ✅ Si on désactive l’invité → le retirer des inscrits
+    if novo_valor == 0:
+        inscricoes = [
+            i for i in inscricoes
+            if i["name"] != f"conv. {name}"
+        ]
+
+    # ✅ Si on active et joueur déjà inscrit → ajouter invité
+    else:
+        for i in inscricoes:
+            if i["name"] == name:
+                inscricoes.append({
+                    "name": f"conv. {name}",
+                    "tee": i["tee"]
+                })
+                break
+
+    return RedirectResponse("/", status_code=303)
+
+
+
+    # ================= GERAR =================
+
+    jogadores = get_jogadores()
+
+def regrouper_souhaits(joueurs):
+    """
+    Regroupe les joueurs selon leurs souhaits.
+    Gère les chaînes A -> B -> C.
+    """
+
+    graph = {}
+
+    # Lier automatiquement invités à leur joueur
+    for j in joueurs:
+      if j["name"].startswith("conv."):
+           nom_principal = j["name"].replace("conv. ", "")
+           graph.setdefault(j["name"], set()).add(nom_principal)
+           graph.setdefault(nom_principal, set()).add(j["name"])
+
+    for j in get_jogadores():
+        nom = j["name"]
+        souhait = j.get("souhait", "").strip()
+
+        if souhait:
+            graph.setdefault(nom, set()).add(souhait)
+            graph.setdefault(souhait, set()).add(nom)
+
+    visited = set()
+    blocs = []
+
+    def dfs(player_name, bloc):
+        visited.add(player_name)
+
+        joueur = next((x for x in joueurs if x["name"] == player_name), None)
+        if joueur:
+            bloc.append(joueur)
+
+        for voisin in graph.get(player_name, []):
+            if voisin not in visited:
+                dfs(voisin, bloc)
+
+    for j in joueurs:
+        if j["name"] not in visited:
+            bloc = []
+            dfs(j["name"], bloc)
+            blocs.append(bloc)
+
+    return blocs
+
+
+def criar_grupos(lista):
+    n = len(lista)
+
+    if n == 0:
+        return []
+
+    # 🔥 SEUL CAS AUTORISÉ POUR 5
+    if n == 5:
+        return [lista]
+
+    # Interdit d'avoir groupe de 5 sinon
+    # On ne cherche QUE combinaisons 3 et 4
+
+    melhor = None
+
+    for num4 in range(n // 4, -1, -1):
+        reste = n - (num4 * 4)
+
+        if reste % 3 == 0:
+            num3 = reste // 3
+            melhor = (num4, num3)
+            break
+
+    if not melhor:
+        # sécurité : tout en un seul groupe (ne devrait jamais arriver)
+        return [lista]
+
+    num4, num3 = melhor
+    grupos = []
+    i = 0
+
+    # Groupes de 3 d'abord (partent avant)
+    for _ in range(num3):
+        grupos.append(lista[i:i+3])
+        i += 3
+
+    # Puis groupes de 4
+    for _ in range(num4):
+        grupos.append(lista[i:i+4])
+        i += 4
+
+    return grupos
+
+
+@app.get("/gerar")
+def gerar():
+    global saidas_geradas
+    global horarios
+    global message_erreur
+
+    jogadores = get_jogadores()
+    message_erreur = ""
+
+    for tee in ["1", "2"]:
+
+        # ===============================
+        # 1️⃣ Récupérer joueurs du tee
+        # ===============================
+        lista = [r for r in inscricoes if r["tee"] == tee]
+
+        jogadores_com_hcp = []
+
+        for r in lista:
+
+            # 🎟️ Gestion invité
+            if r["name"].startswith("conv. "):
+                jogadores_com_hcp.append({
+                    "name": r["name"],
+                    "handicap": 0,
+                    "souhait": "",
+                    "prioridade": ""
+                })
+            else:
+                for j in jogadores:
+                    if j["name"] == r["name"]:
+                        jogadores_com_hcp.append(j)
+                        break
+
+        total_joueurs = len(jogadores_com_hcp)
+
+        if total_joueurs == 0:
+            saidas_geradas[tee] = []
+            horarios[tee] = []
+            continue
+
+        # ===============================
+        # 2️⃣ Regrouper souhaits
+        # ===============================
+        blocs = regrouper_souhaits(jogadores_com_hcp)
+
+        if total_joueurs != 5:
+            for bloc in blocs:
+                if len(bloc) > 4:
+                    message_erreur = "Un bloc dépasse 4 joueurs. Impossible."
+                    return RedirectResponse("/", status_code=303)
+
+        # ===============================
+        # 3️⃣ Trier par handicap décroissant
+        # ===============================
+        jogadores_com_hcp.sort(
+            key=lambda j: j["handicap"],
+            reverse=True
+        )
+
+        # ===============================
+        # 4️⃣ Déterminer tailles optimales
+        # ===============================
+        grupos_brutos = criar_grupos(jogadores_com_hcp)
+        tailles = [len(g) for g in grupos_brutos]
+        grupos = [[] for _ in tailles]
+
+        # ===============================
+        # 5️⃣ Distribution par bloc
+        # ===============================
+        for bloco in blocs:
+
+            placed = False
+
+            for i in range(len(grupos)):
+                if len(grupos[i]) + len(bloco) <= tailles[i]:
+                    grupos[i].extend(bloco)
+                    placed = True
+                    break
+
+            if not placed:
+                message_erreur = "Impossible de placer les souhaits."
+                return RedirectResponse("/", status_code=303)
+
+        # ===============================
+        # 6️⃣ Vérification HCP max
+        # ===============================
+        for grupo in grupos:
+
+            total = sum(j["handicap"] for j in grupo)
+
+            if len(grupo) == 3 and hcp_max_3:
+                if total > hcp_max_3:
+                    message_erreur = "HCP max groupe 3 dépassé."
+                    return RedirectResponse("/", status_code=303)
+
+            if len(grupo) == 4 and hcp_max_4:
+                if total > hcp_max_4:
+                    message_erreur = "HCP max groupe 4 dépassé."
+                    return RedirectResponse("/", status_code=303)
+
+        # ===============================
+        # 7️⃣ Tri final (3 avant 4 + HCP croissant)
+        # ===============================
+        grupos.sort(
+            key=lambda g: (len(g), sum(j["handicap"] for j in g))
+        )
+
+        # ===============================
+        # 8️⃣ Appliquer priorités
+        # ===============================
+        primeira = []
+        meio = []
+        ultima = []
+
+        for grupo in grupos:
+            if any(j.get("prioridade") == "primeira" for j in grupo):
+                primeira.append(grupo)
+            elif any(j.get("prioridade") == "ultima" for j in grupo):
+                ultima.append(grupo)
+            else:
+                meio.append(grupo)
+
+        # Fonction de tri interne
+        def ordenar(lista):
+            return sorted(
+                lista,
+                key=lambda g: (len(g), sum(j["handicap"] for j in g))
+            )
+
+        primeira = ordenar(primeira)
+        meio = ordenar(meio)
+        ultima = ordenar(ultima)
+
+        grupos = primeira + meio + ultima
+
+        # ===============================
+        # 9️⃣ Sauvegarde résultat
+        # ===============================
+        saidas_geradas[tee] = [
+            [{"name": j["name"]} for j in grupo]
+            for grupo in grupos
+        ]
+
+        inicio = "07:00" if tee == "1" else "08:00"
+        base = datetime.strptime(inicio, "%H:%M")
+
+        horarios[tee] = [
+            (base + timedelta(minutes=7 * i)).strftime("%H:%M")
+            for i in range(len(grupos))
+        ]
+
+    return RedirectResponse("/", status_code=303)
+
+@app.get("/pdf")
+def pdf():
+
+    file_path = "JOGO.pdf"
+    doc = SimpleDocTemplate(file_path)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Titre
+    titre = f"JOGO {data_jogo}" if data_jogo else "JOGO"
+    if ranking:
+        titre += " - RANKING"
+
+    elements.append(Paragraph(titre, styles["Title"]))
+    elements.append(Spacer(1, 20))
+
+    for tee in ["1", "2"]:
+
+        elements.append(
+            Paragraph(f"Tee {'7h' if tee == '1' else '8h'}", styles["Heading2"])
+        )
+        elements.append(Spacer(1, 10))
+
+        if not saidas_geradas.get(tee):
+            elements.append(Paragraph("Aucun groupe généré.", styles["Normal"]))
+            elements.append(Spacer(1, 20))
+            continue
+
+        for i, grupo in enumerate(saidas_geradas[tee]):
+
+            hora = horarios[tee][i] if i < len(horarios[tee]) else ""
+
+            data_table = [[hora, "", "HCP"]]
+            total = 0
+
+            for r in grupo:
+                joueur = next((j for j in jogadores if j["name"] == r["name"]), None)
+                if joueur:
+                    total += joueur["handicap"]
+                    data_table.append(
+                        [joueur["name"], "", str(joueur["handicap"])]
+                    )
+
+            data_table.append(["TOTAL", "", str(round(total, 1))])
+
+            table = Table(data_table, colWidths=[200, 30, 50])
+            table.setStyle(
+                TableStyle([
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ])
+            )
+
+            elements.append(table)
+            elements.append(Spacer(1, 20))
+
+    doc.build(elements)
+
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        filename="JOGO.pdf"
+    )
+
+from fastapi.responses import FileResponse
+from datetime import datetime, timedelta
+
+@app.get("/export_whatsapp")
+def export_whatsapp():
+
+    print("DEBUG SAIDAS:", saidas_geradas)
+    print("DEBUG HORARIOS:", horarios)
+
+    jogadores = get_jogadores()
+
+    texto = f"SAÍDAS DO DIA {data_jogo}\n"
+
+    ranking_txt = "SIM" if ranking else "NÃO"
+    texto += f"🏆 RANKING: {ranking_txt}\n"
+
+    texto += "=" * 30 + "\n\n"
+
+    for tee in ["1", "2"]:
+
+        grupos = saidas_geradas.get(tee, [])
+
+        if not grupos:
+            continue
+
+        titulo = "7h" if tee == "1" else "8h"
+        texto += f"{titulo}\n"
+        texto += "-" * 20 + "\n"
+
+        # 🔥 Recalcul horaire de manière sûre
+        inicio = "07:00" if tee == "1" else "08:00"
+        base = datetime.strptime(inicio, "%H:%M")
+
+        for i, grupo in enumerate(grupos):
+
+            hora = (base + timedelta(minutes=7 * i)).strftime("%H:%M")
+            texto += f"{hora}\n"
+
+            total = 0
+
+            for r in grupo:
+
+                # 🎟️ Convidado
+                if r["name"].startswith("conv. "):
+                    texto += f"  - {r['name']} (hcp 0)\n"
+                    continue
+
+                # 👤 Joueur normal
+                jogador = next((j for j in jogadores if j["name"] == r["name"]), None)
+
+                if jogador:
+                    total += jogador["handicap"]
+                    texto += f"  - {jogador['name']} ({jogador['handicap']})\n"
+
+            texto += f"  TOTAL: {round(total,1)}\n\n"
+
+        texto += "\n"
+
+    # 🔥 Sécurité : si aucun groupe
+    if texto.strip() == "":
+        texto = "Aucune saída générée."
+
+    file_path = "saidas.txt"
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(texto)
+
+    return FileResponse(
+        file_path,
+        media_type="text/plain",
+        filename="saidas.txt"
+    )

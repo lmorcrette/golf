@@ -12,6 +12,113 @@ app.add_middleware(
     secret_key="CHANGE_MOI_EN_TRUC_LONG_RANDOM_987654321"
 )
 
+def normalizar_nome(nome_raw):
+
+    import unicodedata
+    import re
+
+    if not nome_raw:
+        return None
+
+    # ================================
+    # 1️⃣ Nettoyage du texte
+    # ================================
+
+    # Supprimer contenu entre parenthèses
+    nome_raw = re.sub(r"\(.*?\)", "", nome_raw)
+
+    # Supprimer texte après tiret
+    nome_raw = nome_raw.split("-")[0]
+
+    # Minuscule + trim
+    nome = nome_raw.lower().strip()
+
+    # Supprimer accents
+    nome = unicodedata.normalize("NFD", nome)
+    nome = "".join(c for c in nome if unicodedata.category(c) != "Mn")
+
+    # Supprimer caractères spéciaux / emojis
+    nome = re.sub(r"[^a-z0-9\s]", "", nome)
+
+    nome = nome.strip()
+
+    # ================================
+    # 2️⃣ Mapping complet validé
+    # ================================
+
+    mapa = {
+
+        # Surnoms / alias principaux
+        "italian": "SERGIO OLEARO",
+        "mazon": "ADEMIR MAZON",
+        "lo": "LAURENT MORCRETTE",
+        "laurent": "LAURENT MORCRETTE",
+
+        "luiz": "LUIZ EDUARDO LOUREIRO",
+        "goes": "LUIZ GOES",
+
+        "doc": "MARCO OLIVEIRA",
+
+        "caberna": "PAULO R CABERNITE",
+        "ramires": "RICARDO RAMIREZ",
+
+        "romi": "ROMIYOSHI SASAKI",
+        "romiyoshi": "ROMIYOSHI SASAKI",
+
+        "penna": "ALEXANDRE PENNA",
+        "gus": "GUSTAVO MUNIZ",
+        "charlao": "CHARLISTON JACOMAZI",
+        "pi": "ALBERTO PI",
+        "milton": "MILTON PASCOWITCH",
+        "marcio": "MARCIO LUIS SERDOZ",
+        "vitor": "VITOR ANDRADE",
+        "diego": "DIEGO LOPES",
+        "arnaldo": "ARNALDO MOHR",
+
+        "andre r": "ANDRE RICARDO",
+
+        # ANDRE EGOROFF variations
+        "a egoroff": "ANDRE EGOROFF",
+        "andre e": "ANDRE EGOROFF",
+        "andre egoroff": "ANDRE EGOROFF",
+
+        "renato": "RENATO ARAUJO",
+        "andres": "ANDRES LOBATO",
+
+        "william": "WILLIAM IBANEZ",
+
+        "hebert": "HEBERT DOS ANJOS",
+        "herbert": "HEBERT DOS ANJOS",
+
+        "uipiquer": "UIPIQER GOMES",
+        "uipiqer": "UIPIQER GOMES",
+
+        "edu": "EDUARDO JACOB",
+        "fernando s": "FERNANDO CORREA",
+        "fernando a": "FERNANDO ATHAYDE",
+        "fred": "FREDERICO DE MELLO",
+        "j muniz": "JOAO MUNIZ",
+        "mario": "MARIO BAPTISTA",
+        "mansur": "MARCO MANSUR",
+        "walter": "WALTER FERNANDES",
+        "yama": "YAMA",
+        "cezar": "Cezar Federmann",
+    }
+
+    # ================================
+    # 3️⃣ Matching intelligent
+    # ================================
+
+    for chave in mapa:
+        if nome == chave:
+            return mapa[chave]
+
+    # Fallback : si prénom exact dans clé
+    for chave in mapa:
+        if nome.startswith(chave + " "):
+            return mapa[chave]
+
+    return None
 # ================= CHARGEMENT JOUEURS =================
 
 
@@ -189,6 +296,14 @@ def home():
     # ================= CONTAINER PRINCIPAL =================
 
     html += '<div style="display:flex;flex-direction:column;gap:40px;">'
+
+    html += '''
+      <form action="/import_whatsapp" method="post">
+      <textarea name="texto" rows="10" style="width:100%;" placeholder="Colle ici la liste WhatsApp"></textarea>
+      <button style="margin-top:5px;">IMPORTER WHATSAPP</button>
+      </form>
+     <hr>
+    '''
 
     # ================= JOUEURS =================
 
@@ -724,42 +839,30 @@ def gerar():
                     return RedirectResponse("/", status_code=303)
 
         # ===============================
-        # 7️⃣ Tri final (3 avant 4 + HCP croissant)
+        # 7️⃣ TRI FINAL CORRIGÉ
         # ===============================
-        grupos.sort(
-            key=lambda g: (len(g), sum(j["handicap"] for j in g))
-        )
 
-        # ===============================
-        # 8️⃣ Appliquer priorités
-        # ===============================
-        primeira = []
-        meio = []
-        ultima = []
+        def score_grupo(grupo):
 
-        for grupo in grupos:
+            # 🔥 RÈGLE ABSOLUE : groupe de 3 sort avant groupe de 4
+            taille_score = 0 if len(grupo) == 3 else 1
+
+            # 🎯 Priorité interne
+            prioridade_score = 1
             if any(j.get("prioridade") == "primeira" for j in grupo):
-                primeira.append(grupo)
+                prioridade_score = 0
             elif any(j.get("prioridade") == "ultima" for j in grupo):
-                ultima.append(grupo)
-            else:
-                meio.append(grupo)
+                prioridade_score = 2
 
-        # Fonction de tri interne
-        def ordenar(lista):
-            return sorted(
-                lista,
-                key=lambda g: (len(g), sum(j["handicap"] for j in g))
-            )
+            # ⚖️ Équilibre HCP
+            hcp_total = sum(j["handicap"] for j in grupo)
 
-        primeira = ordenar(primeira)
-        meio = ordenar(meio)
-        ultima = ordenar(ultima)
+            return (taille_score, prioridade_score, hcp_total)
 
-        grupos = primeira + meio + ultima
+        grupos.sort(key=score_grupo)
 
         # ===============================
-        # 9️⃣ Sauvegarde résultat
+        # 8️⃣ Sauvegarde résultat
         # ===============================
         saidas_geradas[tee] = [
             [{"name": j["name"]} for j in grupo]
@@ -911,3 +1014,103 @@ def export_whatsapp():
         media_type="text/plain",
         filename="saidas.txt"
     )
+
+@app.post("/import_whatsapp")
+def import_whatsapp(texto: str = Form(...)):
+
+    global inscricoes
+
+    linhas = texto.splitlines()
+    tee_atual = None
+
+    jogadores = get_jogadores()
+
+    for linha in linhas:
+
+        linha_original = linha
+        linha = linha.strip()
+
+        if not linha:
+            continue
+
+        # ==========================
+        # Détection horaire
+        # ==========================
+
+        if "7:00" in linha:
+            tee_atual = "1"
+            continue
+
+        if "8:00" in linha:
+            tee_atual = "2"
+            continue
+
+        if not tee_atual:
+            continue
+
+        linha_lower = linha.lower()
+
+        # ==========================
+        # 🎟️ CAS CONVIDADO
+        # ==========================
+
+        if "amigo do" in linha_lower:
+
+            # Extraire nom du joueur principal après "amigo do"
+            parte = linha_lower.split("amigo do")[-1].strip()
+
+            nome_responsavel = normalizar_nome(parte)
+
+            if nome_responsavel:
+
+                # 🔥 Activer convidado en base
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE jogadores SET convidado = 1 WHERE name = ?",
+                    (nome_responsavel,)
+                )
+                conn.commit()
+                conn.close()
+
+                # 🔥 Ajouter invité dans inscricoes
+                inscricoes.append({
+                    "name": f"conv. {nome_responsavel}",
+                    "tee": tee_atual
+                })
+
+            continue
+
+        # ==========================
+        # 👤 CAS JOUEUR NORMAL
+        # ==========================
+
+        nome_oficial = normalizar_nome(linha_original)
+
+        if nome_oficial:
+
+            # Supprimer ancienne inscription
+            inscricoes = [
+                i for i in inscricoes
+                if i["name"] != nome_oficial
+            ]
+
+            inscricoes.append({
+                "name": nome_oficial,
+                "tee": tee_atual
+            })
+
+            # ==========================
+            # 🎯 PRIORITÉ
+            # ==========================
+
+            if "primeiro" in linha_lower:
+
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE jogadores SET prioridade = 'primeira' WHERE name = ?",
+                    (nome_oficial,)
+                )
+                conn.commit()
+                conn.close()
+
+    return RedirectResponse("/", status_code=303)
